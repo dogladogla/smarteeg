@@ -2117,23 +2117,23 @@ export default function SmartEEG() {
 
     const prompt = "You are an expert paediatric neurologist writing the Conclusion section of a structured clinical EEG report.\n\n" +
       "Based on the EEG findings provided, write two paragraphs.\n\n" +
-      "PARAGRAPH 1 — the clinical impression:\n" +
+      "IMPRESSION paragraph:\n" +
       "- Start with: This EEG is [normal / mildly / moderately / severely abnormal] for a [age] [child / neonate].\n" +
-      "- Third person clinical prose. No bullet points. No subheadings. No markdown formatting (no asterisks, no bold).\n" +
+      "- Third person clinical prose. No bullet points, no subheadings, no markdown formatting.\n" +
       "- Cover background, IEDs, ictal events, and RPP/IIC findings in order of clinical importance.\n" +
       "- Include syndrome hypothesis if supported by the data.\n" +
       "- State clearly whether findings support a diagnosis of epilepsy.\n" +
       "- Note clinically significant activation procedure responses.\n" +
       "- Maximum 200 words.\n\n" +
-      "PARAGRAPH 2 — the recommendations:\n" +
+      "RECOMMENDATIONS paragraph:\n" +
       "- Short clinical recommendations paragraph, third person prose, no markdown formatting.\n" +
       "- Be specific (e.g., MRI brain with 3T epilepsy protocol including FLAIR).\n" +
       "- Include EEG follow-up, imaging, referral, genetic/metabolic tests and clinical review as appropriate.\n" +
       "- If EEG is normal, state clearly no further EEG is required unless clinically indicated.\n" +
       "- Maximum 100 words.\n\n" +
-      "CRITICAL — your entire reply must contain ONLY these two lines, with no other text, no preamble, no headers, no markdown, nothing before the first line or after the second:\n" +
-      "IMPRESSION: <the full impression paragraph as one line>\n" +
-      "RECOMMENDATIONS: <the full recommendations paragraph as one line>\n\n" +
+      "Respond with ONLY a single valid JSON object, no other text before or after, no markdown code fences, in exactly this shape:\n" +
+      "{\"impression\": \"...\", \"recommendations\": \"...\"}\n\n" +
+      "Both values must be non-empty plain text strings (use \\n for paragraph breaks within a value if needed, but each value should normally be one paragraph).\n\n" +
       "EEG FINDINGS:\n" + ctx;
 
     try {
@@ -2144,26 +2144,48 @@ export default function SmartEEG() {
       });
       const data = await response.json();
       if (data.content?.[0]?.text) {
-        const full = data.content[0].text.trim();
-        // Strip any stray markdown bold/asterisks Claude might add around headers
-        const cleaned = full.replace(/\*\*/g, "");
-        const impMatch = cleaned.match(/IMPRESSION:\s*([\s\S]*?)(?=\n?RECOMMENDATIONS:|$)/i);
-        const recMatch = cleaned.match(/RECOMMENDATIONS:\s*([\s\S]*)$/i);
-        let impression = impMatch ? impMatch[1].trim() : "";
-        let recs = recMatch ? recMatch[1].trim() : "";
-        // Defensive fallback: if either section came out empty, split the raw
-        // text in half at the RECOMMENDATIONS marker so nothing is silently lost.
-        if (!impression && !recs) {
-          impression = cleaned;
-        } else if (!impression && recs) {
-          // RECOMMENDATIONS matched but IMPRESSION did not — likely no "IMPRESSION:" label was found at all.
-          // Treat everything before the RECOMMENDATIONS label as the impression instead of leaving it blank.
-          const idx = cleaned.search(/RECOMMENDATIONS:/i);
-          impression = idx > -1 ? cleaned.slice(0, idx).replace(/^IMPRESSION:\s*/i, "").trim() : cleaned;
+        const raw = data.content[0].text.trim();
+        // Strip markdown code fences if Claude wraps the JSON in ```json ... ```
+        const fenceStripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+
+        let impression = "";
+        let recs = "";
+        let parsedOk = false;
+
+        try {
+          const parsed = JSON.parse(fenceStripped);
+          if (parsed && typeof parsed === "object") {
+            impression = (parsed.impression || "").toString().trim();
+            recs = (parsed.recommendations || "").toString().trim();
+            parsedOk = true;
+          }
+        } catch (jsonErr) {
+          // JSON parsing failed — fall back to a permissive regex-based extraction
+          // in case the model added stray text around the JSON object.
+          const objMatch = fenceStripped.match(/\{[\s\S]*\}/);
+          if (objMatch) {
+            try {
+              const parsed = JSON.parse(objMatch[0]);
+              impression = (parsed.impression || "").toString().trim();
+              recs = (parsed.recommendations || "").toString().trim();
+              parsedOk = true;
+            } catch (innerErr) {
+              parsedOk = false;
+            }
+          }
         }
-        setField("finalImpression", impression);
+
+        if (!parsedOk || (!impression && !recs)) {
+          // Last-resort fallback: treat the entire raw response as the impression
+          // so nothing is silently lost, and surface a warning to the user.
+          impression = fenceStripped;
+          notify("AI response wasn't in the expected format — full text placed in Impression for your review.", "error");
+        } else {
+          notify("AI draft generated for Impression and Recommendations. Review and edit before signing.");
+        }
+
+        if (impression) setField("finalImpression", impression);
         if (recs) setField("recommendationsFreeText", recs);
-        notify("AI draft generated for Impression and Recommendations. Review and edit before signing.");
       } else {
         const errMsg = data.error || "Unknown error";
         notify("Unable to generate draft: " + errMsg, "error");
