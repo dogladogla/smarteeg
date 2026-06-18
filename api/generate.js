@@ -44,6 +44,6 @@ export default async function handler(req, res) {
 
     res.status(200).json(data);
   } catch (err) {
-    res.status(500).json({ error: "Server error while contacting the AI service." });
+    res.status(500).json({ error: "Server error while generating the draft." });
   }
 }
