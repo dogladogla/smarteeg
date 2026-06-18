@@ -1772,7 +1772,7 @@ function ModuleConclusion({ r, set, readOnly, onGenerateDraft }) {
   return (
     <div>
       <ModuleBanner color={T.navy} label="MODULE 9 — CONCLUSION" icon="📋" />
-      <WarnBox text="The Conclusion is the most clinically critical section. Write in plain language comprehensible to any clinician. The AI draft covers both the clinical impression and recommended next steps — review and edit both before signing." />
+      <WarnBox text="The Conclusion is the most clinically critical section. Write in plain language comprehensible to any clinician. Expert assistance can draft both the clinical impression and recommended next steps — review and edit both before signing." />
 
       <Card>
         <TwoCol>
@@ -1828,13 +1828,13 @@ function ModuleConclusion({ r, set, readOnly, onGenerateDraft }) {
       </Card>
 
       <Card style={{borderColor:T.navy, background: T.navyLt}}>
-        <div style={{fontWeight:700,fontSize:14,color:T.navy,marginBottom:4}}>✨ AI-Assisted Conclusion</div>
+        <div style={{fontWeight:700,fontSize:14,color:T.navy,marginBottom:4}}>🩺 Expert Assistance</div>
         <div style={{fontSize:12,color:T.slate,marginBottom:12}}>
-          The AI generates a draft clinical impression <strong>and</strong> a recommendations paragraph from all structured fields in this report. Review and edit both before signing.
+          Expert assistance drafts a clinical impression <strong>and</strong> a recommendations paragraph from all structured fields in this report. Review and edit both before signing.
         </div>
         {!readOnly && (
           <div style={{display:"flex",gap:12,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
-            <Btn label={generating ? "Generating..." : "✨ Generate Draft Impression & Recommendations"}
+            <Btn label={generating ? "Drafting..." : "🩺 Draft Impression & Recommendations"}
               onClick={handleGenerate} disabled={generating || readOnly} color={T.teal} />
             <span style={{fontSize:12,color:T.grey}}>or type directly in the fields below</span>
           </div>
@@ -1852,9 +1852,9 @@ function ModuleConclusion({ r, set, readOnly, onGenerateDraft }) {
             options={["No further EEG investigation required at this time","Repeat routine EEG — specify timing in notes","Repeat EEG with sleep deprivation","Ambulatory EEG (24–72 hours)","Prolonged video-EEG monitoring — diagnostic","Video-EEG telemetry — pre-surgical evaluation","Continuous EEG monitoring (PICU / NICU)","MRI brain with epilepsy protocol (3 Tesla)","Urgent neuroimaging","Neurology / epilepsy specialist review","Genetic investigations","Metabolic investigations","Neuropsychological assessment","EEG for brain death evaluation","Multidisciplinary team review","Referral to epilepsy surgery programme","Repeat neonatal EEG — specify interval in notes","Cardiology review","Sleep study / polysomnography"]}
             selected={r.recommendations || []} onChange={v=>set("recommendations",v)} />
         </Field>
-        <Field label="Recommendations — Free Text" hint="AI draft appears here after Generate; edit as needed">
+        <Field label="Recommendations — Free Text" hint="Expert-assistance draft appears here after generating; edit as needed">
           <TextArea value={r.recommendationsFreeText} onChange={v=>set("recommendationsFreeText",v)} disabled={readOnly} rows={5}
-            placeholder="AI-generated recommendations appear here. Edit as needed. e.g., 'Repeat EEG in 3 months to reassess after commencing levetiracetam. MRI brain with 3T epilepsy protocol recommended to exclude underlying structural lesion.'" />
+            placeholder="Drafted recommendations appear here. Edit as needed. e.g., 'Repeat EEG in 3 months to reassess after commencing levetiracetam. MRI brain with 3T epilepsy protocol recommended to exclude underlying structural lesion.'" />
         </Field>
       </Card>
     </div>
@@ -1989,10 +1989,29 @@ export default function SmartEEG() {
     setActiveReport(updated);
   };
 
+  // setField uses a functional update so that multiple calls made in quick
+  // succession (e.g. setting several fields from one async action) always
+  // build on the latest pending state rather than a stale closure snapshot.
   const setField = (key, val) => {
-    if (!activeReport) return;
-    const updated = { ...activeReport, [key]: val };
-    saveReport(updated);
+    setActiveReport(prev => {
+      if (!prev) return prev;
+      const updated = { ...prev, [key]: val };
+      setAppState(s => ({ ...s, reports: s.reports.map(r => r.id === updated.id ? updated : r) }));
+      return updated;
+    });
+  };
+
+  // setFields applies several field updates atomically in a single state
+  // transition — the preferred way to commit more than one field at once
+  // (e.g. the expert-assistance draft, which sets both impression and
+  // recommendations together).
+  const setFields = (patch) => {
+    setActiveReport(prev => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...patch };
+      setAppState(s => ({ ...s, reports: s.reports.map(r => r.id === updated.id ? updated : r) }));
+      return updated;
+    });
   };
 
   const signReport = () => {
@@ -2034,11 +2053,14 @@ export default function SmartEEG() {
     notify("Technical section marked as complete.");
   };
 
-  // ── AI IMPRESSION ──
-  const generateDraft = async () => {
-    const r = activeReport;
+  // ── EXPERT-ASSISTANCE DRAFT (CONCLUSION) ──
+  // Builds a structured context summary from every completed field in the
+  // report, sends it to the server-side generation endpoint, and applies
+  // the returned impression + recommendations as a single atomic state
+  // update (see setFields above) so neither value can silently overwrite
+  // the other.
+  const buildConclusionContext = (r) => {
     const neo = isNeonatal(r.dob, r.ga);
-    // Build context from all completed structured fields
     const L = [];
     L.push("PATIENT: " + (r.patientName || "unnamed") + ", Age: " + getAgeDisplay(r.dob) + (neo ? ", PMA: " + getPMA(r.dob, r.ga) + " weeks" : ""));
     L.push("EEG TYPE: " + (r.eegType || "Not specified"));
@@ -2047,32 +2069,32 @@ export default function SmartEEG() {
     L.push("");
     if (neo) {
       L.push("NEONATAL BACKGROUND: " + (r.bgGradeNeo || "Not documented"));
-      if (r.continuityNeo)        L.push("  Continuity: " + r.continuityNeo);
-      if (r.ibiDuration)          L.push("  IBI: " + r.ibiDuration + "s (range " + (r.ibiRange || "?") + ")");
-      if (r.continuityAssessNeo)  L.push("  Assessment vs PMA: " + r.continuityAssessNeo);
-      if (r.symmetryNeo)          L.push("  Symmetry: " + r.symmetryNeo);
-      if (r.synchronyNeo)         L.push("  Synchrony: " + r.synchronyNeo);
-      if (r.variability)          L.push("  Variability: " + r.variability);
-      if (r.reactivityNeo)        L.push("  Reactivity: " + r.reactivityNeo);
-      if (r.eegMaturity)          L.push("  Maturity: " + r.eegMaturity);
-      if (r.bgNarrativeNeo)       L.push("  Narrative: " + r.bgNarrativeNeo);
+      if (r.continuityNeo)       L.push("  Continuity: " + r.continuityNeo);
+      if (r.ibiDuration)         L.push("  IBI: " + r.ibiDuration + "s (range " + (r.ibiRange || "?") + ")");
+      if (r.continuityAssessNeo) L.push("  Assessment vs PMA: " + r.continuityAssessNeo);
+      if (r.symmetryNeo)         L.push("  Symmetry: " + r.symmetryNeo);
+      if (r.synchronyNeo)        L.push("  Synchrony: " + r.synchronyNeo);
+      if (r.variability)         L.push("  Variability: " + r.variability);
+      if (r.reactivityNeo)       L.push("  Reactivity: " + r.reactivityNeo);
+      if (r.eegMaturity)         L.push("  Maturity: " + r.eegMaturity);
+      if (r.bgNarrativeNeo)      L.push("  Narrative: " + r.bgNarrativeNeo);
     } else {
       L.push("BACKGROUND: " + (r.bgClassification || "Not documented"));
-      if (r.pdrFreq)      L.push("  PDR: " + r.pdrFreq + " Hz (" + (r.pdrAssessment || "?") + ")");
-      if (r.bgFreq)       L.push("  Predominant frequency: " + r.bgFreq);
-      if (r.continuity)   L.push("  Continuity: " + r.continuity);
-      if (r.symmetry)     L.push("  Symmetry: " + r.symmetry);
-      if (r.reactivity)   L.push("  Reactivity: " + r.reactivity);
-      if (r.bgNarrative)  L.push("  Narrative: " + r.bgNarrative);
+      if (r.pdrFreq)     L.push("  PDR: " + r.pdrFreq + " Hz (" + (r.pdrAssessment || "?") + ")");
+      if (r.bgFreq)      L.push("  Predominant frequency: " + r.bgFreq);
+      if (r.continuity)  L.push("  Continuity: " + r.continuity);
+      if (r.symmetry)    L.push("  Symmetry: " + r.symmetry);
+      if (r.reactivity)  L.push("  Reactivity: " + r.reactivity);
+      if (r.bgNarrative) L.push("  Narrative: " + r.bgNarrative);
     }
     L.push("");
     L.push("INTERICTAL EDs: " + (r.iedPresence || "Not documented"));
     if (r.iedPresence && r.iedPresence.startsWith("Present")) {
-      if (r.iedMorphology)      L.push("  Morphology: " + r.iedMorphology);
-      if (r.iedLateralisation)  L.push("  Lateralisation: " + r.iedLateralisation);
-      if (r.iedRegion)          L.push("  Region: " + r.iedRegion);
-      if (r.iedPrevalence)      L.push("  Prevalence: " + r.iedPrevalence + (r.iedRate ? " (~" + r.iedRate + ")" : ""));
-      if (r.iedState)           L.push("  State relationship: " + r.iedState);
+      if (r.iedMorphology)     L.push("  Morphology: " + r.iedMorphology);
+      if (r.iedLateralisation) L.push("  Lateralisation: " + r.iedLateralisation);
+      if (r.iedRegion)         L.push("  Region: " + r.iedRegion);
+      if (r.iedPrevalence)     L.push("  Prevalence: " + r.iedPrevalence + (r.iedRate ? " (~" + r.iedRate + ")" : ""));
+      if (r.iedState)          L.push("  State relationship: " + r.iedState);
       if (r.iedHvResponse && r.iedHvResponse !== "Not performed / not applicable")
         L.push("  HV response: " + r.iedHvResponse);
       if (r.iedIpsResponse && r.iedIpsResponse !== "Not performed / not applicable")
@@ -2087,15 +2109,15 @@ export default function SmartEEG() {
         L.push("  CSWS/ESES: " + r.csws + (r.swi ? " (SWI " + r.swi + "%)" : ""));
       if (r.centrotemporalSpikes && r.centrotemporalSpikes.startsWith("Present"))
         L.push("  Centrotemporal spikes: " + r.centrotemporalSpikes);
-      if (r.iedSummary)         L.push("  IED summary: " + r.iedSummary);
+      if (r.iedSummary) L.push("  IED summary: " + r.iedSummary);
     }
     L.push("");
     L.push("ICTAL: " + (r.ictalType && r.ictalType.length ? r.ictalType.join(", ") : "None recorded"));
     if (r.ictalType && r.ictalType.length && !r.ictalType[0].startsWith("None")) {
-      if (r.seizureCount)           L.push("  Total seizures: " + r.seizureCount);
-      if (r.onsetLateralisation)    L.push("  Onset: " + r.onsetLateralisation + " / " + (r.onsetLocalisation || "?"));
-      if (r.seizureDurationMeasured)L.push("  Typical duration: " + r.seizureDurationMeasured + "s");
-      if (r.seCriteria)             L.push("  SE: " + r.seCriteria);
+      if (r.seizureCount)            L.push("  Total seizures: " + r.seizureCount);
+      if (r.onsetLateralisation)     L.push("  Onset: " + r.onsetLateralisation + " / " + (r.onsetLocalisation || "?"));
+      if (r.seizureDurationMeasured) L.push("  Typical duration: " + r.seizureDurationMeasured + "s");
+      if (r.seCriteria)              L.push("  SE: " + r.seCriteria);
       if (r.ictalHvResponse && r.ictalHvResponse !== "Not performed / not applicable")
         L.push("  Seizures with HV: " + r.ictalHvResponse);
       if (r.ictalIpsResponse && r.ictalIpsResponse !== "Not performed / not applicable")
@@ -2104,7 +2126,7 @@ export default function SmartEEG() {
         L.push("  Seizures in sleep: " + r.ictalSleepResponse);
       if (r.ictalOtherProvocation && r.ictalOtherProvocation !== "No clear precipitants identified")
         L.push("  Other precipitant: " + r.ictalOtherProvocation);
-      if (r.ictalNarrative)         L.push("  Narrative: " + r.ictalNarrative);
+      if (r.ictalNarrative) L.push("  Narrative: " + r.ictalNarrative);
     }
     if (r.rppPresent && r.rppPresent.startsWith("Yes")) {
       L.push("");
@@ -2113,28 +2135,69 @@ export default function SmartEEG() {
     }
     if (r.comparisonStatement)
       L.push("\nPREVIOUS EEG: " + r.comparisonStatement + (r.comparisonFreeText ? " — " + r.comparisonFreeText : ""));
-    const ctx = L.join("\n");
+    return L.join("\n");
+  };
 
-    const prompt = "You are an expert paediatric neurologist writing the Conclusion section of a structured clinical EEG report.\n\n" +
-      "Based on the EEG findings provided, write two paragraphs.\n\n" +
-      "IMPRESSION paragraph:\n" +
-      "- Start with: This EEG is [normal / mildly / moderately / severely abnormal] for a [age] [child / neonate].\n" +
-      "- Third person clinical prose. No bullet points, no subheadings, no markdown formatting.\n" +
-      "- Cover background, IEDs, ictal events, and RPP/IIC findings in order of clinical importance.\n" +
-      "- Include syndrome hypothesis if supported by the data.\n" +
-      "- State clearly whether findings support a diagnosis of epilepsy.\n" +
-      "- Note clinically significant activation procedure responses.\n" +
-      "- Maximum 200 words.\n\n" +
-      "RECOMMENDATIONS paragraph:\n" +
-      "- Short clinical recommendations paragraph, third person prose, no markdown formatting.\n" +
-      "- Be specific (e.g., MRI brain with 3T epilepsy protocol including FLAIR).\n" +
-      "- Include EEG follow-up, imaging, referral, genetic/metabolic tests and clinical review as appropriate.\n" +
-      "- If EEG is normal, state clearly no further EEG is required unless clinically indicated.\n" +
-      "- Maximum 100 words.\n\n" +
-      "Respond with ONLY a single valid JSON object, no other text before or after, no markdown code fences, in exactly this shape:\n" +
-      "{\"impression\": \"...\", \"recommendations\": \"...\"}\n\n" +
-      "Both values must be non-empty plain text strings (use \\n for paragraph breaks within a value if needed, but each value should normally be one paragraph).\n\n" +
-      "EEG FINDINGS:\n" + ctx;
+  const buildConclusionPrompt = (ctx) =>
+    "You are an expert paediatric neurologist writing the Conclusion section of a structured clinical EEG report.\n\n" +
+    "Based on the EEG findings provided, write two paragraphs.\n\n" +
+    "IMPRESSION paragraph:\n" +
+    "- Start with: This EEG is [normal / mildly / moderately / severely abnormal] for a [age] [child / neonate].\n" +
+    "- Third person clinical prose. No bullet points, no subheadings, no markdown formatting.\n" +
+    "- Cover background, IEDs, ictal events, and RPP/IIC findings in order of clinical importance.\n" +
+    "- Include syndrome hypothesis if supported by the data.\n" +
+    "- State clearly whether findings support a diagnosis of epilepsy.\n" +
+    "- Note clinically significant activation procedure responses.\n" +
+    "- Maximum 200 words.\n\n" +
+    "RECOMMENDATIONS paragraph:\n" +
+    "- Short clinical recommendations paragraph, third person prose, no markdown formatting.\n" +
+    "- Be specific (e.g., MRI brain with 3T epilepsy protocol including FLAIR).\n" +
+    "- Include EEG follow-up, imaging, referral, genetic/metabolic tests and clinical review as appropriate.\n" +
+    "- If EEG is normal, state clearly no further EEG is required unless clinically indicated.\n" +
+    "- Maximum 100 words.\n\n" +
+    "Respond with ONLY a single valid JSON object, no other text before or after, no markdown code fences, in exactly this shape:\n" +
+    "{\"impression\": \"...\", \"recommendations\": \"...\"}\n\n" +
+    "Both values must be non-empty plain text strings.\n\n" +
+    "EEG FINDINGS:\n" + ctx;
+
+  // Parses the model's raw text response into { impression, recommendations }.
+  // Tolerates markdown code fences and stray text around the JSON object,
+  // and never silently drops content — if parsing fails entirely, the raw
+  // text is returned as the impression so nothing is lost.
+  const parseConclusionResponse = (rawText) => {
+    const raw = (rawText || "").trim();
+    const fenceStripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+
+    const tryParse = (text) => {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object") {
+          return {
+            impression: (parsed.impression || "").toString().trim(),
+            recommendations: (parsed.recommendations || "").toString().trim(),
+            ok: true,
+          };
+        }
+      } catch (_) { /* fall through */ }
+      return null;
+    };
+
+    let result = tryParse(fenceStripped);
+    if (!result) {
+      const objMatch = fenceStripped.match(/\{[\s\S]*\}/);
+      if (objMatch) result = tryParse(objMatch[0]);
+    }
+    if (!result || (!result.impression && !result.recommendations)) {
+      return { impression: fenceStripped, recommendations: "", ok: false };
+    }
+    return result;
+  };
+
+  const generateDraft = async () => {
+    const r = activeReport;
+    if (!r) return;
+    const ctx = buildConclusionContext(r);
+    const prompt = buildConclusionPrompt(ctx);
 
     try {
       const response = await fetch("/api/generate", {
@@ -2143,55 +2206,31 @@ export default function SmartEEG() {
         body: JSON.stringify({ prompt, max_tokens: 1200 }),
       });
       const data = await response.json();
-      if (data.content?.[0]?.text) {
-        const raw = data.content[0].text.trim();
-        // Strip markdown code fences if Claude wraps the JSON in ```json ... ```
-        const fenceStripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      const text = data?.content?.[0]?.text;
 
-        let impression = "";
-        let recs = "";
-        let parsedOk = false;
+      if (!text) {
+        notify("Unable to generate draft: " + (data?.error || "no response from server") + ".", "error");
+        return;
+      }
 
-        try {
-          const parsed = JSON.parse(fenceStripped);
-          if (parsed && typeof parsed === "object") {
-            impression = (parsed.impression || "").toString().trim();
-            recs = (parsed.recommendations || "").toString().trim();
-            parsedOk = true;
-          }
-        } catch (jsonErr) {
-          // JSON parsing failed — fall back to a permissive regex-based extraction
-          // in case the model added stray text around the JSON object.
-          const objMatch = fenceStripped.match(/\{[\s\S]*\}/);
-          if (objMatch) {
-            try {
-              const parsed = JSON.parse(objMatch[0]);
-              impression = (parsed.impression || "").toString().trim();
-              recs = (parsed.recommendations || "").toString().trim();
-              parsedOk = true;
-            } catch (innerErr) {
-              parsedOk = false;
-            }
-          }
-        }
+      const { impression, recommendations, ok } = parseConclusionResponse(text);
 
-        if (!parsedOk || (!impression && !recs)) {
-          // Last-resort fallback: treat the entire raw response as the impression
-          // so nothing is silently lost, and surface a warning to the user.
-          impression = fenceStripped;
-          notify("AI response wasn't in the expected format — full text placed in Impression for your review.", "error");
-        } else {
-          notify("AI draft generated for Impression and Recommendations. Review and edit before signing.");
-        }
+      // Apply both fields in one atomic update — this is the fix for the
+      // earlier bug where the recommendations update silently overwrote
+      // the impression update because both were derived from the same
+      // stale snapshot of activeReport.
+      const patch = {};
+      if (impression) patch.finalImpression = impression;
+      if (recommendations) patch.recommendationsFreeText = recommendations;
+      if (Object.keys(patch).length > 0) setFields(patch);
 
-        if (impression) setField("finalImpression", impression);
-        if (recs) setField("recommendationsFreeText", recs);
+      if (ok) {
+        notify("Draft impression and recommendations generated. Review and edit before signing.");
       } else {
-        const errMsg = data.error || "Unknown error";
-        notify("Unable to generate draft: " + errMsg, "error");
+        notify("The response wasn't in the expected format — the full text was placed in the Impression field for your review.", "error");
       }
     } catch (e) {
-      notify("Connection error. Check your API key and internet connection.", "error");
+      notify("Connection error while requesting expert assistance. Please try again.", "error");
     }
   };
 
